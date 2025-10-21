@@ -3,15 +3,52 @@ name = "unique_ip_counter"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-ahash = "0.8.12"
-anyhow = "1.0"
+# Web framework
 axum = "0.7"
-dashmap = "6.1.0"
-lazy_static = "1.5.0"
-prometheus = "0.14.0"
-prometheus-client = "0.24.0"
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1.0", features = ["full"] }
+serde_json = "1.0"
+
+# Prometheus metrics
+prometheus = "0.13"
+
+# Fast hashing for IP addresses
+ahash = "0.8"
+
+# Efficient concurrent data structures
+dashmap = "6.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+lazy_static = "1.5.0"
+config = { version = "0.14.1", features = ["yaml"] }
+parking_lot = "0.12.5"
+
+[features]
+mocks = []
+
+[dev-dependencies]
+criterion = "0.7.0"
+
+[[bench]]
+name = "ip_store_bench"
+harness = false
+required-features = ["mocks"]
+
+[[bench]]
+name = "service_bench"
+harness = false
+required-features = ["mocks"]

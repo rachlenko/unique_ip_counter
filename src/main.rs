@@ -1,74 +1,75 @@
-use axum::{
-    extract::State,
-    routing::{get, post},
-    Json, Router,
+// src/main.rs - Application entry point
+
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+use tracing::{error, info};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use unique_ip_counter::{
+    config::Settings,
+    server::{create_app, AppState},
 };
-use serde::Deserialize;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use tokio;
-use unique_ip_counter::{DEFAULT_LOG_PORT, DEFAULT_METRICS_PORT};
-
-mod ip_store;
-mod metric_store;
-
-use ip_store::{IpStore, IpStoreImpl};
-use metric_store::{MetricsStore, MetricsStoreImpl};
-
-#[derive(Debug, Deserialize)]
-struct Log {
-    ip: String,
-}
-
-struct AppState {
-    ip_store: Arc<dyn IpStore>,
-    metrics_store: Arc<dyn MetricsStore>,
-}
-
-async fn handle_post_request(
-    State(state): State<Arc<AppState>>,
-    Json(logs): Json<Vec<Log>>,
-) {
-    for log in logs {
-        if let Ok(ip_addr) = log.ip.parse::<IpAddr>() {
-            if state.ip_store.add(ip_addr) {
-                let count = state.ip_store.count() as i64;
-                state.metrics_store.update_unique_ip_count(count);
-            }
-        }
-    }
-}
-
-async fn handle_metrics_request(State(state): State<Arc<AppState>>) -> String {
-    state.metrics_store.get_metrics().unwrap_or_default()
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let state = Arc::new(AppState {
-        ip_store: Arc::new(IpStoreImpl::new()),
-        metrics_store: Arc::new(MetricsStoreImpl::new()?),
+    // Initialize logging
+    init_tracing()?;
+
+    // Load configuration
+    let settings = Settings::from_env()?;
+    settings
+        .validate()
+        .map_err(|e| anyhow::anyhow!("Invalid configuration: {}", e))?;
+
+    info!(
+        "Starting IP Counter Service v{}",
+        unique_ip_counter::VERSION
+    );
+    info!("Configuration: {:?}", settings);
+
+    // Create application state
+    let state = AppState::new(settings.clone())?;
+
+    // Create application routers
+    let (logs_app, metrics_app) = create_app(state);
+
+    // Create socket addresses
+    let logs_addr = SocketAddr::from(([0, 0, 0, 0], settings.server.log_port));
+    let metrics_addr = SocketAddr::from(([0, 0, 0, 0], settings.server.metrics_port));
+
+    // Bind to ports
+    let logs_listener = TcpListener::bind(logs_addr).await?;
+    let metrics_listener = TcpListener::bind(metrics_addr).await?;
+
+    info!("Logs service listening on {}", logs_addr);
+    info!("Metrics service listening on {}", metrics_addr);
+
+    // Start servers
+    let logs_handle = tokio::spawn(async move {
+        if let Err(e) = axum::serve(logs_listener, logs_app).await {
+            error!("Logs server error: {}", e);
+        }
     });
 
-    let metrics_app = Router::new()
-        .route("/metrics", get(handle_metrics_request))
-        .with_state(state.clone());
-    let metrics_addr = SocketAddr::from(([127, 0, 0, 1], DEFAULT_METRICS_PORT));
-
-    tokio::spawn(async move {
-        println!("Metrics server listening on {}", metrics_addr);
-        let listener = tokio::net::TcpListener::bind(metrics_addr).await.unwrap();
-        axum::serve(listener, metrics_app).await.unwrap();
+    let metrics_handle = tokio::spawn(async move {
+        if let Err(e) = axum::serve(metrics_listener, metrics_app).await {
+            error!("Metrics server error: {}", e);
+        }
     });
 
-    let app = Router::new()
-        .route("/logs", post(handle_post_request))
-        .with_state(state);
+    // Wait for servers
+    tokio::try_join!(logs_handle, metrics_handle)?;
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], DEFAULT_LOG_PORT));
-    println!("Listening on {}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn init_tracing() -> anyhow::Result<()> {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "unique_ip_counter=info,tower_http=debug".into());
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     Ok(())
 }
